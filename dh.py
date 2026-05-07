@@ -118,43 +118,64 @@ class MITM_Attack:
 # ─────────────────────────────────────────────
 # CDH Hardness Demo
 # ─────────────────────────────────────────────
+def _make_tiny_group():
+    """
+    Generate a dedicated tiny safe-prime group (~20-bit) for the CDH brute-force demo.
+    FIX: original checked min(params.q,2**20)<10000 which was never true for 64-bit groups.
+    Now we always generate a fresh tiny group so brute-force always runs.
+    """
+    import random
+    for bits in [20, 22, 24]:
+        p, q = gen_safe_prime(bits)
+        if q > 100:
+            for _ in range(100):
+                candidate = random.randint(2, p - 2)
+                g = mod_exp(candidate, 2, p)
+                if g != 1 and mod_exp(g, q, p) == 1:
+                    return p, q, g
+    return None, None, None
+
+
 def cdh_hardness_demo(params: DHParams):
     """
-    For small group (q ≈ 2^20), demonstrate brute-force DH requires
-    computing g^a from g and g^a — impossible without knowing a.
+    CDH hardness demo — FIXED.
+    Always generates a dedicated tiny group for brute-force (original was always skipped).
     """
+    import random
     print("\n  CDH Hardness Demo:")
-    # Use small parameters for demonstration
-    # (our default is 64-bit, which is already brute-forceable in finite time
-    # but shows the concept)
-    a = int.from_bytes(os.urandom(4), 'big') % min(params.q, 2**20)
-    b = int.from_bytes(os.urandom(4), 'big') % min(params.q, 2**20)
-    A = mod_exp(params.g, a, params.p)
-    B = mod_exp(params.g, b, params.p)
-    K = mod_exp(params.g, (a * b) % params.q, params.p)
 
-    print(f"  Alice's public: A = g^a = {A}")
-    print(f"  Bob's   public: B = g^b = {B}")
-    print(f"  Shared secret K = g^(ab) = {K}")
-    print(f"  Eve sees A, B but NOT a, b.")
-
-    # Brute force: Eve tries to find a by DL
-    if min(params.q, 2**20) < 10000:
-        start = time.time()
-        found_a = None
-        for guess in range(min(params.q, 2**20)):
-            if mod_exp(params.g, guess, params.p) == A:
+    # --- Part 1: tiny group, brute-force ALWAYS runs ---
+    print("  [Tiny dedicated group ~20-bit — brute-force demo]")
+    p_t, q_t, g_t = _make_tiny_group()
+    if p_t:
+        a_t = random.randint(1, q_t - 1)
+        b_t = random.randint(1, q_t - 1)
+        A_t = mod_exp(g_t, a_t, p_t)
+        B_t = mod_exp(g_t, b_t, p_t)
+        K_t = mod_exp(g_t, (a_t * b_t) % q_t, p_t)
+        print(f"    p={p_t}, q={q_t}, g={g_t}")
+        print(f"    Alice A=g^a={A_t}  Bob B=g^b={B_t}  K=g^(ab)={K_t}")
+        t0 = time.time()
+        found_a, gi = None, 1
+        for guess in range(1, q_t + 1):
+            gi = (gi * g_t) % p_t
+            if gi == A_t:
                 found_a = guess
                 break
-        elapsed = time.time() - start
+        elapsed = time.time() - t0
         if found_a is not None:
-            K_eve = mod_exp(B, found_a, params.p)
-            print(f"  Eve brute-forced a={found_a} in {elapsed:.3f}s (small group)")
-            print(f"  Eve computes K = {K_eve} {'==' if K_eve == K else '!='} K ✓")
-        print(f"  For real 2048-bit groups: brute force infeasible (>10^600 operations)")
-    else:
-        print(f"  Group order q ≈ 2^{params.q.bit_length()}: brute force infeasible")
-        print(f"  Best known algorithm (GNFS): sub-exponential but still huge")
+            K_eve = mod_exp(B_t, found_a, p_t)
+            print(f"    Eve found a={found_a} in {elapsed*1000:.2f}ms  =>  K_eve={K_eve}  {'== K ✓ CDH broken!' if K_eve==K_t else '✗'}")
+
+    # --- Part 2: real group, brute-force infeasible ---
+    print(f"\n  [Real group q ≈ 2^{params.q.bit_length()} — brute-force infeasible]")
+    a = random.randint(1, params.q - 1)
+    b = random.randint(1, params.q - 1)
+    A = mod_exp(params.g, a, params.p)
+    B = mod_exp(params.g, b, params.p)
+    K = mod_exp(params.g, (a*b) % params.q, params.p)
+    print(f"    A={A}  B={B}  K={K}")
+    print(f"    Brute-force: ≈2^{params.q.bit_length()} steps — far beyond any computer.")
 
 
 # ─────────────────────────────────────────────

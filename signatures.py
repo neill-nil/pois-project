@@ -444,7 +444,7 @@ if __name__ == "__main__":
     for m in messages:
         s = Sign(sk, m)
         v = Verify(vk, m, s)
-        print(f"    '{m[:40]}' -> valid={v}")
+        print(f"    '{m[:40].decode('utf-8', errors='replace')}' -> valid={v}")
         assert v
 
     print("\n[6] Multiplicative Forgery Attack Demo...")
