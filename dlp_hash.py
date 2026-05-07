@@ -14,10 +14,8 @@ import os
 import sys
 import struct
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa13_miller_rabin'))
 from miller_rabin import mod_exp, gen_safe_prime, is_prime
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import MerkleDamgard, md_pad
 
 

@@ -17,7 +17,6 @@ import math
 import time
 import random
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import ToyHash
 
 
@@ -187,7 +186,6 @@ def attack_toy_hash(n_bits: int) -> dict:
 # ─────────────────────────────────────────────
 def attack_dlp_hash_truncated(n_bits: int = 16) -> dict:
     """Attack truncated DLP hash to confirm birthday bound."""
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa8_dlp_hash'))
     from dlp_hash import DLP_Hash, DLPHashParams
     
     print(f"  Generating DLP hash parameters (may take a moment)...")

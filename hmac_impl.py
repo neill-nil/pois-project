@@ -17,16 +17,12 @@ import sys
 import time
 import struct
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa8_dlp_hash'))
 from dlp_hash import DLP_Hash, DLPHashParams, DLPCompress
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import MerkleDamgard, md_pad
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa3_cpa'))
 from cpa_enc import CPA_Enc, BLOCK
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa5_mac'))
 from mac import CBC_MAC
 
 

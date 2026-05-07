@@ -13,13 +13,10 @@ Implements:
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa3_cpa'))
 from cpa_enc import CPA_Enc, BLOCK
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa5_mac'))
 from mac import PRF_MAC, secure_compare
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa2_prf'))
 from prf import AES_PRF
 
 
