@@ -14,10 +14,8 @@ import os
 import sys
 import struct
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa13_miller_rabin'))
 from miller_rabin import mod_exp, gen_safe_prime, is_prime
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import MerkleDamgard, md_pad
 
 
@@ -139,42 +137,74 @@ class DLP_Hash:
 def demo_collision_resistance(params: DLPHashParams):
     """
     Show that finding a collision requires solving DLP.
-    For tiny parameters (q ≈ 2^16), demonstrate brute-force birthday attack.
+    Use tiny parameters (q ≈ 2^16) so the birthday attack completes quickly.
     """
     print("\n  Collision Resistance Demo:")
-    comp = DLPCompress(params)
-    iv = comp.get_iv()
 
-    print(f"  DLP compression: h(x, y) = g^x * h_hat^y mod p")
-    print(f"  To find collision (x,y)!=(x',y'): need to solve DLP (compute log_g(h_hat))")
-    print(f"  Group order q = {params.q}, brute-force requires O(sqrt(q)) ≈ {int(params.q**0.5)} operations")
+    # For the full-size params, show the hardness
+    print(f"  Full-size group order q = {params.q} ({params.q.bit_length()}-bit)")
+    print(f"  Birthday bound: O(sqrt(q)) ≈ 2^{params.q.bit_length()//2} evaluations")
+    print(f"  Infeasible to brute-force at this size — use toy params instead.")
 
-    # Birthday attack on DLP compress (as compression function, not full hash)
+    # Create tiny params (q ≈ 2^16) for birthday attack demo
+    print(f"\n  Creating toy parameters (16-bit q) for birthday attack demo...")
+    tiny = DLPHashParams(bits=18)  # Small enough for birthday attack
+    comp = DLPCompress(tiny)
+    expected_birthday = int(tiny.q ** 0.5)
+    print(f"  Toy group order q = {tiny.q}, birthday bound ≈ {expected_birthday}")
+
+    # Birthday attack: find (x,y) != (x',y') with h(x,y) = h(x',y')
     import random
     seen = {}
     count = 0
-    while True:
-        x = random.randint(0, min(params.q - 1, 2**16))
-        y = random.randint(0, min(params.q - 1, 2**16))
+    collision = None
+    while count < 10 * expected_birthday + 5000:
+        x = random.randint(0, tiny.q - 1)
+        y = random.randint(0, tiny.q - 1)
         cv = x.to_bytes(comp.cv_bytes, 'big')
         block = y.to_bytes(comp.cv_bytes, 'big')
-        h = comp.compress(iv, block)
+        h = comp.compress(cv, block)  # Use cv (not iv) so x is actually used
         count += 1
         if h in seen:
             x_prev, y_prev = seen[h]
             if (x, y) != (x_prev, y_prev):
-                print(f"  Birthday collision at {count} evaluations (expected ≈ {int(params.q**0.5)}):")
-                print(f"    (x={x}, y={y}) and (x'={x_prev}, y'={y_prev})")
-                print(f"    h(x,y) = h(x',y') = {h.hex()}")
-                # Verify
-                h1 = comp.compress(iv, y.to_bytes(comp.cv_bytes, 'big'))
-                h2 = comp.compress(iv, y_prev.to_bytes(comp.cv_bytes, 'big'))
+                collision = ((x, y), (x_prev, y_prev), h)
                 break
         else:
             seen[h] = (x, y)
-        if count > 10 * int(params.q**0.5) + 1000:
-            print(f"  No collision found in {count} evaluations")
-            break
+
+    if collision is None:
+        print(f"  No collision found in {count} evaluations (unexpected)")
+        return
+
+    (x1, y1), (x2, y2), h_val = collision
+    print(f"\n  Birthday collision found at {count} evaluations (expected ≈ {expected_birthday}):")
+    print(f"    (x={x1}, y={y1}) and (x'={x2}, y'={y2})")
+    print(f"    h(x,y) = h(x',y') = {h_val.hex()}")
+
+    # Verify collision via re-computation
+    h_check1 = comp.compress(x1.to_bytes(comp.cv_bytes, 'big'), y1.to_bytes(comp.cv_bytes, 'big'))
+    h_check2 = comp.compress(x2.to_bytes(comp.cv_bytes, 'big'), y2.to_bytes(comp.cv_bytes, 'big'))
+    assert h_check1 == h_check2, "Collision verification failed!"
+    print(f"    Collision verified: compress recomputed and matched ✓")
+
+    # Show that a collision would solve DLP
+    # g^x1 * h_hat^y1 = g^x2 * h_hat^y2
+    # => g^(x1-x2) = h_hat^(y2-y1)
+    # => log_g(h_hat) = (x1-x2) * (y2-y1)^(-1) mod q
+    dy = (y2 - y1) % tiny.q
+    dx = (x1 - x2) % tiny.q
+    if dy != 0:
+        dy_inv = pow(dy, tiny.q - 2, tiny.q)  # Fermat's little theorem
+        alpha_recovered = (dx * dy_inv) % tiny.q
+        # Verify: g^alpha should equal h_hat
+        check = mod_exp(tiny.g, alpha_recovered, tiny.p)
+        print(f"    DLP extraction: alpha = (x-x')/(y'-y) mod q = {alpha_recovered}")
+        print(f"    Verify g^alpha mod p = {check}")
+        print(f"    h_hat = {tiny.h_hat}")
+        print(f"    g^alpha == h_hat: {check == tiny.h_hat} ← collision solves DLP! ✓")
+    else:
+        print(f"    y == y' but x != x' — trivial collision (same y, different x)")
 
 
 def demo_integration(dlp_hash: DLP_Hash):

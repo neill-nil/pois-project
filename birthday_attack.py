@@ -17,7 +17,6 @@ import math
 import time
 import random
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import ToyHash
 
 
@@ -32,7 +31,7 @@ def make_toy_hash(n_bits: int):
     from merkle_damgard import toy_compress_xor, MerkleDamgard, md_pad
     import struct
 
-    n_bytes = max(1, n_bits // 8)
+    n_bytes = (n_bits + 7) // 8  # Ceiling division: 10 bits -> 2 bytes
     
     def truncated_compress(cv: bytes, block: bytes) -> bytes:
         """XOR-fold compression, output n_bytes."""
@@ -97,9 +96,14 @@ def floyd_birthday_attack(hash_fn, n_bits: int, seed: bytes = None) -> tuple:
     Space-efficient birthday attack using Floyd's tortoise-and-hare.
     Treats hash as f: {0,1}^n -> {0,1}^n.
     
+    Algorithm:
+    1. Phase 1: tortoise-and-hare to detect cycle.
+    2. Phase 2: find collision at cycle entry — look for two distinct
+       inputs that map to the same output: f(a) == f(b) but a != b.
+    
     Returns: (x1, x2, hash_value, evaluations_count) or None
     """
-    n_bytes = max(1, n_bits // 8)
+    n_bytes = (n_bits + 7) // 8
     
     def f(x: bytes) -> bytes:
         """Function: hash output as input for next step."""
@@ -109,57 +113,49 @@ def floyd_birthday_attack(hash_fn, n_bits: int, seed: bytes = None) -> tuple:
             h = h + b'\x00' * (n_bytes - len(h))
         return h[:n_bytes]
     
-    # Start
-    if seed is None:
-        seed = os.urandom(n_bytes)
+    max_attempts = 5
+    for attempt in range(max_attempts):
+        x0 = seed if (seed is not None and attempt == 0) else os.urandom(n_bytes)
+        
+        # Phase 1: Find meeting point (tortoise moves 1, hare moves 2)
+        tortoise = f(x0)
+        hare = f(f(x0))
+        count = 3  # 3 calls to f
+        
+        max_steps = 4 * (2 ** n_bits)
+        while tortoise != hare:
+            tortoise = f(tortoise)
+            hare = f(f(hare))
+            count += 3
+            if count > max_steps:
+                break
+        
+        if tortoise != hare:
+            continue  # retry with different seed
+        
+        # Phase 2: Find the collision.
+        # Reset tortoise to x0. Walk both one step at a time.
+        # Look for f(tortoise) == f(hare) while tortoise != hare.
+        # This occurs one step before the cycle entry point.
+        tortoise = x0
+        
+        while True:
+            next_t = f(tortoise)
+            next_h = f(hare)
+            count += 2
+            
+            if next_t == next_h:
+                if tortoise != hare:
+                    # Found collision: f(tortoise) = f(hare), tortoise != hare
+                    return (tortoise, hare, next_t, count)
+                else:
+                    # mu = 0: both at same position, try different seed
+                    break
+            
+            tortoise = next_t
+            hare = next_h
     
-    # Phase 1: Find meeting point (tortoise moves 1 step, hare moves 2)
-    tortoise = f(seed)
-    hare = f(f(seed))
-    count = 2
-    
-    while tortoise != hare:
-        tortoise = f(tortoise)
-        hare = f(f(hare))
-        count += 2
-        if count > 2 ** (n_bits + 2):
-            return None  # Give up
-
-    # Phase 2: Find start of cycle (lambda)
-    mu = 0
-    tortoise = seed
-    while tortoise != hare:
-        tortoise = f(tortoise)
-        hare = f(hare)
-        mu += 1
-        count += 2
-
-    # Phase 3: Find cycle length (lambda)
-    lam = 1
-    hare = f(tortoise)
-    count += 1
-    while tortoise != hare:
-        hare = f(hare)
-        lam += 1
-        count += 1
-
-    # Now we have cycle start (mu) and length (lam)
-    # x1 = f^{mu}(seed), x2 = f^{mu + lam}(seed)
-    x1 = seed
-    for _ in range(mu):
-        x1 = f(x1)
-
-    x2 = x1
-    for _ in range(lam):
-        x2 = f(x2)
-
-    # Verify collision: hash(x1) == hash(x2) but inputs to hash differ
-    h1 = hash_fn(x1)
-    h2 = hash_fn(x2)
-    
-    if x1 != x2 and h1 == h2:
-        return (x1, x2, h1, count)
-    return None
+    return None  # All attempts failed
 
 
 # ─────────────────────────────────────────────
@@ -190,7 +186,6 @@ def attack_toy_hash(n_bits: int) -> dict:
 # ─────────────────────────────────────────────
 def attack_dlp_hash_truncated(n_bits: int = 16) -> dict:
     """Attack truncated DLP hash to confirm birthday bound."""
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa8_dlp_hash'))
     from dlp_hash import DLP_Hash, DLPHashParams
     
     print(f"  Generating DLP hash parameters (may take a moment)...")
@@ -200,7 +195,7 @@ def attack_dlp_hash_truncated(n_bits: int = 16) -> dict:
     def truncated_dlp(msg: bytes) -> bytes:
         h = dlp.hash(msg)
         # Truncate to n_bits
-        n_bytes = max(1, n_bits // 8)
+        n_bytes = (n_bits + 7) // 8
         result = h[:n_bytes]
         if n_bits % 8 != 0:
             mask = (1 << (n_bits % 8)) - 1
@@ -247,10 +242,78 @@ def empirical_birthday_curve(n_values=None, trials_per_n: int = 20) -> dict:
     return results
 
 
-def theoretical_birthday_probability(k: int, n_bits: int) -> float:
+def theoretical_birthday_probability_cdf(k: int, n_bits: int) -> float:
     """P(collision by k-th hash) ≈ 1 - e^(-k(k-1)/2^(n+1))."""
     N = 2 ** n_bits
     return 1.0 - math.exp(-k * (k - 1) / (2 * N))
+
+
+def theoretical_birthday_probability_demo(k: int, n_bits: int) -> float:
+    """Demo curve: 1 - e^(-k^2/2^n)"""
+    N = 2 ** n_bits
+    return 1.0 - math.exp(-(k * k) / N)
+
+
+def plot_toy_hash_results(results: list, out_path: str) -> None:
+    """Plot empirical evaluations vs theoretical 2^(n/2)."""
+    import matplotlib.pyplot as plt
+
+    ns = [r['n_bits'] for r in results if r.get('evaluations')]
+    actual = [r['evaluations'] for r in results if r.get('evaluations')]
+    expected = [r['expected'] for r in results if r.get('evaluations')]
+
+    plt.figure(figsize=(6.5, 4))
+    plt.plot(ns, expected, marker='o', color='#fbbf24', label='2^(n/2) expected')
+    plt.scatter(ns, actual, color='#22d3ee', label='Empirical evals')
+    plt.title('Birthday Attack: Toy Hash Evaluations')
+    plt.xlabel('Output bits n')
+    plt.ylabel('Evaluations until collision')
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+
+def plot_empirical_birthday_curve(results: dict, out_path: str) -> None:
+    """Plot empirical CDFs with theoretical overlay for each n."""
+    import matplotlib.pyplot as plt
+
+    n_values = sorted(results.keys())
+    cols = 2
+    rows = (len(n_values) + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(10, 4.5 * rows))
+    axes_flat = axes.flatten() if hasattr(axes, 'flatten') else [axes]
+
+    for ax, n in zip(axes_flat, n_values):
+        counts = sorted(results[n])
+        if not counts:
+            ax.set_title(f'n={n} (no data)')
+            continue
+        m = len(counts)
+        ys = [(i + 1) / m for i in range(m)]
+        ax.step(counts, ys, where='post', label='Empirical CDF')
+
+        max_k = max(counts)
+        ks = list(range(1, max_k + 1))
+        theory = [theoretical_birthday_probability_cdf(k, n) for k in ks]
+        ax.plot(ks, theory, color='#fbbf24', label='Theory')
+
+        expected = 2 ** (n / 2)
+        ax.axvline(expected, color='#22d3ee', linestyle='--', label='2^(n/2)')
+        ax.set_title(f'n={n} bits')
+        ax.set_xlabel('Evaluations (k)')
+        ax.set_ylabel('P(collision by k)')
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+
+    # Hide unused axes
+    for ax in axes_flat[len(n_values):]:
+        ax.axis('off')
+
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
 
 
 # ─────────────────────────────────────────────
@@ -258,7 +321,6 @@ def theoretical_birthday_probability(k: int, n_bits: int) -> float:
 # ─────────────────────────────────────────────
 def md5_sha1_context():
     """Calculate 2^(n/2) for MD5 (n=128) and SHA-1 (n=160)."""
-    print("\n  MD5/SHA-1 Birthday Bound Context:")
     cpu_speed = 1e9  # 10^9 hash/sec (modern CPU)
     
     for name, n in [("MD5", 128), ("SHA-1", 160), ("SHA-256", 256)]:
@@ -292,14 +354,20 @@ if __name__ == "__main__":
 
     # 1. Naive birthday on toy hashes
     print("\n[1] Naive Birthday Attack on Toy Hash Functions")
-    for n in [8, 10, 12]:
+    toy_results = []
+    for n in [8, 12, 16]:
         r = attack_toy_hash(n)
+        toy_results.append(r)
         if r['evaluations']:
             print(f"  n={n} bits: collision at {r['evaluations']} evals "
                   f"(expected ≈{r['expected']:.1f}, ratio={r['ratio']:.2f})")
             print(f"    x1={r['x1']}, x2={r['x2']}, H={r['hash']}")
         else:
             print(f"  n={n} bits: no collision found")
+
+    toy_plot_path = os.path.join(os.path.dirname(__file__), 'toy_hash_plot.png')
+    plot_toy_hash_results(toy_results, toy_plot_path)
+    print(f"  Plot saved to {toy_plot_path}")
 
     # 2. Floyd's cycle detection
     print("\n[2] Floyd's Cycle Detection (Space-Efficient)")
@@ -316,8 +384,8 @@ if __name__ == "__main__":
             print(f"  n={n} bits: Floyd - no collision found")
 
     # 3. Empirical birthday curve
-    print("\n[3] Empirical Birthday Curve (20 trials per n)")
-    results = empirical_birthday_curve([8, 10, 12], trials_per_n=20)
+    print("\n[3] Empirical Birthday Curve (100 trials per n)")
+    results = empirical_birthday_curve([8, 10, 12, 14, 16], trials_per_n=100)
     print(f"  {'n':>4} | {'mean evals':>12} | {'2^(n/2)':>10} | ratio")
     print(f"  {'-'*45}")
     for n, counts in sorted(results.items()):
@@ -325,6 +393,10 @@ if __name__ == "__main__":
             mean = sum(counts) / len(counts)
             expected = 2 ** (n / 2)
             print(f"  {n:>4} | {mean:>12.1f} | {expected:>10.1f} | {mean/expected:.2f}")
+
+    curve_plot_path = os.path.join(os.path.dirname(__file__), 'birthday_curve.png')
+    plot_empirical_birthday_curve(results, curve_plot_path)
+    print(f"  Plot saved to {curve_plot_path}")
 
     # 4. Truncated DLP hash
     print("\n[4] Birthday Attack on Truncated DLP Hash (n=16 bits)")
@@ -339,15 +411,17 @@ if __name__ == "__main__":
         print("  DLP hash at 16-bit output is broken at birthday bound ✓")
 
     # 5. MD5/SHA-1 context
+    print("\n[5] MD5/SHA-1 Birthday Bound Context")
     md5_sha1_context()
 
+    # 6. Birthday probability table
     print("\n[6] Birthday Probability Formula: P(k, n) = 1 - e^(-k^2/2^n)")
     print("  k    | P(k, n=12) | P(k, n=16) | P(k, n=20)")
     print("  " + "-"*50)
     for k in [1, 10, 64, 100, 256, 512]:
-        p12 = theoretical_birthday_probability(k, 12)
-        p16 = theoretical_birthday_probability(k, 16)
-        p20 = theoretical_birthday_probability(k, 20)
+        p12 = theoretical_birthday_probability_demo(k, 12)
+        p16 = theoretical_birthday_probability_demo(k, 16)
+        p20 = theoretical_birthday_probability_demo(k, 20)
         print(f"  {k:>5}| {p12:>10.4f} | {p16:>10.4f} | {p20:>10.4f}")
 
     print("\n✓ PA #9 complete.")

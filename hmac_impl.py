@@ -15,15 +15,15 @@ Implements:
 import os
 import sys
 import time
+import struct
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa8_dlp_hash'))
 from dlp_hash import DLP_Hash, DLPHashParams, DLPCompress
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa7_merkle'))
 from merkle_damgard import MerkleDamgard, md_pad
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'pa3_cpa'))
 from cpa_enc import CPA_Enc, BLOCK
+
+from mac import CBC_MAC
 
 
 # ─────────────────────────────────────────────
@@ -89,6 +89,27 @@ def demonstrate_timing_side_channel():
     print(f"    Secure compare (diff at byte 0):  {time_early2:.3f} µs")
     print(f"    Secure compare (diff at byte 15): {time_late2:.3f} µs")
     print(f"    Timing difference: {abs(time_late2 - time_early2):.3f} µs (negligible ✓)")
+
+
+def md_pad_with_len(message_len: int, block_size: int) -> bytes:
+    """Return MD-strengthening padding for a given message length (bytes)."""
+    bit_len = message_len * 8
+    pad = b'\x80'
+    while (message_len + len(pad) + 8) % block_size != 0:
+        pad += b'\x00'
+    pad += struct.pack('>Q', bit_len)
+    return pad
+
+
+def md_continue_from_state(compress_fn, state: bytes, data: bytes,
+                           total_len: int, block_size: int) -> bytes:
+    """Continue MD hashing from a known state for data with known total length."""
+    padded = data + md_pad_with_len(total_len, block_size)
+    z = state
+    for i in range(0, len(padded), block_size):
+        block = padded[i:i + block_size]
+        z = compress_fn(z, block)
+    return z
 
 
 # ─────────────────────────────────────────────
@@ -234,38 +255,28 @@ def demo_length_extension(hmac: HMAC):
     # Computes tag for (m || pad || m') starting from state t
     m_prime = b"; send $1000 to eve"
 
-    # The MD state after processing k||m is t (for naive H(k||m))
-    # Attacker can continue hashing from state t
-    # (simulating the Merkle-Damgard continuation)
-    def extend_hash(state: bytes, additional: bytes) -> bytes:
-        """
-        Continue MD computation from a known state.
-        This is what a length-extension attacker does.
-        """
-        # Simulate: hash the additional data starting from state `state`
-        # using the same MD structure
-        md_continued = MerkleDamgard(
-            hmac.H.compress.compress,
-            state,  # Start from the leaked state (the naive MAC tag)
-            block_size=hmac.H.compress.get_block_size()
-        )
-        return md_continued.hash(additional)
-
-    # Attacker computes extended tag WITHOUT knowing k
-    t_extended = extend_hash(t, m_prime)
-
-    # What the extended message looks like
-    pad_len = hmac.H.compress.get_block_size() - ((len(k) + len(m)) % hmac.H.compress.get_block_size())
-    pad_block = bytes([pad_len] * pad_len)
-    m_extended = m + pad_block + m_prime
+    block_size = hmac.H.compress.get_block_size()
+    glue = md_pad_with_len(len(k) + len(m), block_size)
+    m_extended = m + glue + m_prime
 
     # Verify against honest computation
     t_honest = naive_mac_dlp(k, m_extended)
+
+    # Attacker computes extended tag WITHOUT knowing k
+    total_len = len(k) + len(m_extended)
+    t_extended = md_continue_from_state(
+        hmac.H.compress.compress,
+        t,
+        m_prime,
+        total_len,
+        block_size
+    )
 
     print(f"\n  Attacker forges tag for extended message WITHOUT knowing k:")
     print(f"  m' = {m_prime!r}")
     print(f"  Forged tag: {t_extended.hex()}")
     print(f"  Honest tag: {t_honest.hex()}")
+    print(f"  Tags match: {t_extended == t_honest} (True = attack SUCCESS ✓)")
     
     # Note: exact match depends on padding details, but the principle is demonstrated
     print(f"\n  The attack works because: naive_mac = H(k||m) exposes MD state as tag")
@@ -275,7 +286,13 @@ def demo_length_extension(hmac: HMAC):
     t_hmac = hmac.Mac(k, m)
     print(f"  HMAC(k, m) = {t_hmac.hex()}")
     # Try extension attack on HMAC
-    t_forged = extend_hash(t_hmac, m_prime)
+    t_forged = md_continue_from_state(
+        hmac.H.compress.compress,
+        t_hmac,
+        m_prime,
+        total_len,
+        block_size
+    )
     t_hmac_extended = hmac.Mac(k, m_extended)
     print(f"  HMAC(k, m||pad||m') = {t_hmac_extended.hex()}")
     print(f"  Forged tag = {t_forged.hex()}")
@@ -297,26 +314,105 @@ class EtH_Enc:
         self.cpa = cpa or CPA_Enc()
 
     def EtH_Enc(self, kE: bytes, kM: bytes, m: bytes) -> tuple:
-        """Encrypt then HMAC."""
+        """Encrypt then HMAC; returns (c, t) where c includes nonce."""
         assert len(kE) == BLOCK
-        kM_padded = kM[:self.hmac.block_size].ljust(self.hmac.block_size, b'\x00')
         # Step 1: CPA encrypt
-        r, c = self.cpa.Enc(kE, m)
+        r, c_plain = self.cpa.Enc(kE, m)
+        c = r + c_plain
         # Step 2: HMAC the full ciphertext (r || c)
-        ce = r + c
-        t = self.hmac.Mac(kM_padded, ce)
-        return r, c, t
+        t = self.hmac.Mac(kM, c)
+        return c, t
 
-    def EtH_Dec(self, kE: bytes, kM: bytes, r: bytes, c: bytes, t: bytes):
+    def EtH_Dec(self, kE: bytes, kM: bytes, c: bytes, t: bytes):
         """Verify HMAC then decrypt."""
         assert len(kE) == BLOCK
-        kM_padded = kM[:self.hmac.block_size].ljust(self.hmac.block_size, b'\x00')
-        ce = r + c
         # Step 1: Verify HMAC BEFORE decrypting
-        if not self.hmac.Verify(kM_padded, ce, t):
+        if not self.hmac.Verify(kM, c, t):
             return None  # ⊥
         # Step 2: Decrypt
-        return self.cpa.Dec(kE, r, c)
+        r = c[:BLOCK]
+        c_plain = c[BLOCK:]
+        return self.cpa.Dec(kE, r, c_plain)
+
+
+# ─────────────────────────────────────────────
+# IND-CCA2 Game for EtH
+# ─────────────────────────────────────────────
+class IND_CCA2_EtH_Game:
+    """IND-CCA2 game for Encrypt-then-HMAC."""
+    def __init__(self, eth: EtH_Enc):
+        self.eth = eth
+        self.kE = os.urandom(BLOCK)
+        self.kM = os.urandom(eth.hmac.block_size)
+        self._challenge = None
+        self._b = None
+
+    def oracle_encrypt(self, m: bytes) -> tuple:
+        return self.eth.EtH_Enc(self.kE, self.kM, m)
+
+    def oracle_decrypt(self, c: bytes, t: bytes):
+        if self._challenge and (c, t) == self._challenge:
+            return None
+        return self.eth.EtH_Dec(self.kE, self.kM, c, t)
+
+    def challenge(self, m0: bytes, m1: bytes) -> tuple:
+        import random
+        assert len(m0) == len(m1)
+        self._b = random.randint(0, 1)
+        m = m0 if self._b == 0 else m1
+        ct = self.eth.EtH_Enc(self.kE, self.kM, m)
+        self._challenge = ct
+        return ct
+
+    def submit_guess(self, guess: int) -> bool:
+        return guess == self._b
+
+    def run_simulation(self, n_rounds: int = 20) -> float:
+        wins = 0
+        for _ in range(n_rounds):
+            self.kE = os.urandom(BLOCK)
+            self.kM = os.urandom(self.eth.hmac.block_size)
+            self._challenge = None
+
+            m0 = b'zero-message-0000'
+            m1 = b'one-message--1111'
+            c_star, t_star = self.challenge(m0, m1)
+
+            # Adversary flips a ciphertext bit and queries decryption oracle
+            c_mod = bytearray(c_star)
+            c_mod[BLOCK] ^= 0x01
+            c_mod = bytes(c_mod)
+            result = self.oracle_decrypt(c_mod, t_star)
+            assert result is None, "EtH should reject modified ciphertext"
+
+            import random
+            if self.submit_guess(random.randint(0, 1)):
+                wins += 1
+
+        return abs(wins / n_rounds - 0.5)
+
+
+def compare_performance(hmac: HMAC, msg: bytes, rounds: int = 200) -> None:
+    """Compare tag size and average time vs PRF-based CBC-MAC."""
+    cbc = CBC_MAC()
+    k = os.urandom(BLOCK)
+    k_hmac = os.urandom(hmac.block_size)
+
+    t0 = time.perf_counter()
+    for _ in range(rounds):
+        cbc.Mac(k, msg)
+    t1 = time.perf_counter()
+
+    for _ in range(rounds):
+        hmac.Mac(k_hmac, msg)
+    t2 = time.perf_counter()
+
+    cbc_avg = (t1 - t0) * 1e6 / rounds
+    hmac_avg = (t2 - t1) * 1e6 / rounds
+
+    print("\n  Performance Comparison (tags only):")
+    print(f"    CBC-MAC tag size: {BLOCK} bytes, avg time: {cbc_avg:.3f} µs")
+    print(f"    HMAC tag size:    {hmac.output_size} bytes, avg time: {hmac_avg:.3f} µs")
 
 
 # ─────────────────────────────────────────────
@@ -345,15 +441,18 @@ if __name__ == "__main__":
     
     # Tampered message
     m_bad = b"Authenticate me?"
-    print(f"  Verify tampered: {hmac.Verify(k, m_bad, t)} ✓")
+    print(f"  Verify tampered: {hmac.Verify(k, m_bad, t)} (False = correctly rejected ✓)")
 
     # 3. CRHF => MAC (forward)
+    print("\n[3] CRHF => MAC (Forward Direction)")
     demo_crhf_to_mac(hmac)
 
     # 4. MAC => CRHF (backward)
+    print("\n[4] MAC => CRHF (Backward Direction)")
     mac_hash = mac_to_crhf(hmac)
 
     # 5. Length-extension attack
+    print("\n[5] Length-Extension Attack")
     demo_length_extension(hmac)
 
     # 6. Encrypt-then-HMAC
@@ -364,22 +463,33 @@ if __name__ == "__main__":
 
     msgs = [b"Secret!", b"A" * 32, b"TLS-style secure message!!"]
     for msg in msgs:
-        r, c, t = eth.EtH_Enc(kE, kM, msg)
-        recovered = eth.EtH_Dec(kE, kM, r, c, t)
-        print(f"  m={msg[:20]!r}... -> Dec={'OK' if recovered==msg else 'FAIL'} ✓")
+        c, t = eth.EtH_Enc(kE, kM, msg)
+        recovered = eth.EtH_Dec(kE, kM, c, t)
+        msg_preview = repr(msg)[:20]
+        print(f"  m={msg_preview}... -> Dec={'OK' if recovered==msg else 'FAIL'} ✓")
 
     # Reject tampered ciphertext
-    r, c, t = eth.EtH_Enc(kE, kM, b"Important message")
+    c, t = eth.EtH_Enc(kE, kM, b"Important message")
     c_bad = bytes([c[0] ^ 0x01]) + c[1:]
-    result = eth.EtH_Dec(kE, kM, r, c_bad, t)
+    result = eth.EtH_Dec(kE, kM, c_bad, t)
     print(f"  Tampered ciphertext -> {result} (None = ⊥, rejected) ✓")
 
-    # 7. Constant-time comparison
-    print("\n[7] Constant-Time Tag Comparison")
+    # 7. CCA2 game
+    print("\n[7] IND-CCA2 Game (EtH)")
+    cca_game = IND_CCA2_EtH_Game(eth)
+    advantage = cca_game.run_simulation(20)
+    print(f"  Adversary advantage: {advantage:.4f} (should be ≈ 0)")
+
+    # 8. Constant-time comparison
+    print("\n[8] Constant-Time Tag Comparison")
     demonstrate_timing_side_channel()
 
-    # 8. Bidirectionality summary
-    print("\n[8] Bidirectional Reductions Summary:")
+    # 9. Performance comparison
+    print("\n[9] Performance Comparison")
+    compare_performance(hmac, b"benchmark message" * 2)
+
+    # 10. Bidirectionality summary
+    print("\n[10] Bidirectional Reductions Summary:")
     print("  CRHF => HMAC: Our DLP hash has PRF-secure compression => HMAC secure")
     print("  HMAC => CRHF: h'(cv,block) = HMAC_k(cv||block) is collision-resistant")
     print("  HMAC => MAC: HMAC is EUF-CMA secure MAC (demonstrated in step 3)")
