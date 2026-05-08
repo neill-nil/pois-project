@@ -1,0 +1,48 @@
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.env
+*.log
+
+# ── Node / React (pa0_webapp) ────────────────────────────────────────────────
+pa0_webapp/node_modules/
+pa0_webapp/build/
+pa0_webapp/.env
+pa0_webapp/.env.local
+pa0_webapp/.env.*.local
+
+# root-level package-lock (not part of any real package)
+/package-lock.json
+
+# ── OS / Editor junk ─────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.iml
+
+# ── Binary / large assets ─────────────────────────────────────────────────────
+*.pdf
+*.zip
+*.tar.gz
+*.pkl
+*.pt
+*.pth
+*.bin
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
