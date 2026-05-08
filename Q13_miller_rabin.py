@@ -18,7 +18,7 @@ import math
 # ─────────────────────────────────────────────
 # Modular exponentiation (square-and-multiply)
 # ─────────────────────────────────────────────
-def mod_exp_custom(base, exp, mod):
+def mod_exp(base, exp, mod):
     """Compute base^exp mod mod using square-and-multiply."""
     if mod == 1:
         return 0
@@ -210,6 +210,3 @@ if __name__ == "__main__":
     demo_performance()
 
     print("\n✓ PA #13 complete.")
-
-def mod_exp(base, exp, mod):
-    return pow(base, exp, mod)
